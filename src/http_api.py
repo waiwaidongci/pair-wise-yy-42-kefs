@@ -71,7 +71,8 @@ def make_handler(service: Service, static_dir: str):
                 status = 400
             else:
                 status = 500
-            self._json(status, {"error": exc.__class__.__name__, "message": str(exc)})
+            self._json(status, {"error": exc.__class__.__name__, "message": str(exc),
+                                **({"details": exc.details} if getattr(exc, "details", None) else {})})
 
         def do_GET(self) -> None:
             try:
@@ -98,6 +99,35 @@ def make_handler(service: Service, static_dir: str):
                     actor, role = self._identity()
                     del actor
                     self._json(200, {"events": service.audit(role)})
+                elif path == "/api/casualties":
+                    actor, role = self._identity()
+                    del actor
+                    self._json(200, {"casualties": service.list_casualties(role)})
+                elif path == "/api/casualties/waiting":
+                    actor, role = self._identity()
+                    del actor
+                    self._json(200, {"queue": service.waiting_queue(role)})
+                elif path == "/api/vehicles":
+                    actor, role = self._identity()
+                    del actor
+                    self._json(200, {"vehicles": service.list_vehicles(role)})
+                elif path == "/api/receivers":
+                    actor, role = self._identity()
+                    del actor
+                    self._json(200, {"receivers": service.list_receivers(role)})
+                elif path == "/api/batches":
+                    actor, role = self._identity()
+                    del actor
+                    self._json(200, {"batches": service.list_batches(role)})
+                elif path.startswith("/api/batches/"):
+                    batch_id = int(path.rsplit("/", 1)[-1])
+                    actor, role = self._identity()
+                    del actor
+                    self._json(200, service.get_batch(batch_id, role))
+                elif path == "/api/admissions":
+                    actor, role = self._identity()
+                    del actor
+                    self._json(200, {"admissions": service.list_admissions(role)})
                 else:
                     self._json(404, {"error": "not_found"})
             except Exception as exc:
@@ -119,6 +149,26 @@ def make_handler(service: Service, static_dir: str):
                     expected = body.get("expected_version")
                     self._json(200, service.transition(
                         item_id, target, expected, actor, role))
+                elif path == "/api/casualties":
+                    self._json(201, service.register_casualty(body, actor, role))
+                elif path.startswith("/api/casualties/") and path.endswith("/recheck"):
+                    casualty_id = int(path.split("/")[3])
+                    self._json(200, service.recheck_casualty(casualty_id, body, actor, role))
+                elif path.startswith("/api/casualties/") and path.endswith("/admit"):
+                    casualty_id = int(path.split("/")[3])
+                    self._json(201, service.admit_casualty(casualty_id, actor, role))
+                elif path == "/api/vehicles":
+                    self._json(201, service.create_vehicle(body, actor, role))
+                elif path == "/api/receivers":
+                    self._json(201, service.create_receiver(body, actor, role))
+                elif path == "/api/batches":
+                    self._json(201, service.plan_batch(body, actor, role))
+                elif path.startswith("/api/batches/") and path.endswith("/confirm"):
+                    batch_id = int(path.split("/")[3])
+                    self._json(200, service.confirm_batch(batch_id, actor, role))
+                elif path.startswith("/api/batches/") and path.endswith("/depart"):
+                    batch_id = int(path.split("/")[3])
+                    self._json(200, service.depart_batch(batch_id, actor, role))
                 else:
                     self._json(404, {"error": "not_found"})
             except Exception as exc:

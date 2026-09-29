@@ -34,6 +34,22 @@ python3 app.py --db ./data.db --port 8319
 
 允许角色：field_commander, incident_commander, logistics, viewer。火线长度、风向变化和离线记录数量影响风险等级；同一资源不能同时出现在多个活动任务中。
 
+## 伤员后送排队
+
+三处业务代码分开：分诊判定在`src/rules.py`（纯函数），后送台账在`src/repository.py`/`src/service.py`，请求入口在`src/http_api.py`。
+
+规则：伤员按现场编号（`site_ref`）登记，重复上报沿用首次分诊（409并回传首次记录）；发车前队列按危重critical、重伤serious、轻伤minor排序，同等级按登记序号；复查只能调高等级，未发车批次就地重排，已发车记录不动；批次状态为planned→confirmed→departed，已确认批次不能打散；车辆座位或接收点床位不足时409返回`details.gap`缺口明细，原队列与批次保留；同一伤员只能被一个接收点收治一次。
+
+- `POST /api/casualties` 登记分诊（field_commander/logistics）
+- `GET /api/casualties`、`GET /api/casualties/waiting` 全部/待后送队列（已按发车顺序排好）
+- `POST /api/casualties/{id}/recheck` 复查调高（未发车批次自动重排）
+- `POST /api/vehicles`、`POST /api/receivers` 车辆（座位）、接收点（床位）
+- `POST /api/batches` 组批（按队列顺序取 min(座位,空床)，响应含剩余缺口）
+- `POST /api/batches/{id}/confirm`、`POST /api/batches/{id}/depart` 确认（复核运力）、发车
+- `GET /api/batches`、`GET /api/batches/{id}`
+- `POST /api/casualties/{id}/admit` 接收点收治（重复收治409）
+- `GET /api/admissions`
+
 ## 测试
 
 ```bash
