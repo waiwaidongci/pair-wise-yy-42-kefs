@@ -98,6 +98,37 @@ def make_handler(service: Service, static_dir: str):
                     actor, role = self._identity()
                     del actor
                     self._json(200, {"events": service.audit(role)})
+                elif path == "/api/med/waiting":
+                    actor, role = self._identity()
+                    del actor
+                    self._json(200, {"queue": service.waiting_queue(role)})
+                elif path == "/api/med/vehicles":
+                    actor, role = self._identity()
+                    del actor
+                    self._json(200, {"vehicles": service.list_vehicles(role)})
+                elif path == "/api/med/receivers":
+                    actor, role = self._identity()
+                    del actor
+                    self._json(200, {"receivers": service.list_receivers(role)})
+                elif path == "/api/med/batches":
+                    actor, role = self._identity()
+                    del actor
+                    self._json(200, {"batches": service.list_batches(role)})
+                elif path.startswith("/api/med/batches/"):
+                    batch_id = int(path.rsplit("/", 1)[-1])
+                    actor, role = self._identity()
+                    del actor
+                    self._json(200, service.get_batch(batch_id, role))
+                elif path.endswith("/reports") and "/casualties/" in path:
+                    casualty_id = int(path.split("/")[4])
+                    actor, role = self._identity()
+                    del actor
+                    self._json(200, {"reports": service.casualty_reports(casualty_id, role)})
+                elif path.startswith("/api/med/casualties/"):
+                    casualty_id = int(path.rsplit("/", 1)[-1])
+                    actor, role = self._identity()
+                    del actor
+                    self._json(200, service.get_casualty(casualty_id, role))
                 else:
                     self._json(404, {"error": "not_found"})
             except Exception as exc:
@@ -119,6 +150,22 @@ def make_handler(service: Service, static_dir: str):
                     expected = body.get("expected_version")
                     self._json(200, service.transition(
                         item_id, target, expected, actor, role))
+                elif path == "/api/med/casualties":
+                    self._json(201, service.register_casualty(body, actor, role))
+                elif path.startswith("/api/med/casualties/") and path.endswith("/recheck"):
+                    casualty_id = int(path.split("/")[4])
+                    self._json(200, service.recheck_casualty(
+                        casualty_id, body, actor, role))
+                elif path == "/api/med/vehicles":
+                    self._json(201, service.add_vehicle(body, actor, role))
+                elif path == "/api/med/receivers":
+                    self._json(201, service.add_receiver(body, actor, role))
+                elif path == "/api/med/batches":
+                    self._json(201, service.confirm_batch(body, actor, role))
+                elif path.startswith("/api/med/batches/") and path.endswith("/dispatch"):
+                    batch_id = int(path.split("/")[4])
+                    self._json(200, service.dispatch_batch(
+                        batch_id, body, actor, role))
                 else:
                     self._json(404, {"error": "not_found"})
             except Exception as exc:

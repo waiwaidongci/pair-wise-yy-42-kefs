@@ -8,6 +8,14 @@ from .rules import (AUDIT_ROLES, CREATE_ROLES, ENTITY, RECORD_ROLES, TITLE,
                     VIEW_ROLES, completion_blockers, escalation_required,
                     priority_score, response_deadline_hours, role_for_transition,
                     validate_transition)
+from .triage import TRIAGE_LABELS, normalize_triage
+
+# 后送业务角色：现场卫生员登记/复查，后勤点确认批次与发车，viewer只读
+TRIAGE_ROLES = {"field_commander", "incident_commander", "logistics"}
+DISPATCH_ROLES = {"logistics", "incident_commander"}
+MED_VIEW_ROLES = VIEW_ROLES | TRIAGE_ROLES
+MED_ENTITY = '后送伤员'
+BATCH_ENTITY = '后送批次'
 
 
 class Service:
@@ -101,3 +109,133 @@ class Service:
         result["escalation_required"] = escalation_required(
             item["severity"], item["quantity"], item["threshold"])
         return result
+
+    # ================= 后送排队 =================
+
+    @property
+    def ledger(self):
+        return self.repository.evacuation
+
+    def _med_actor(self, actor: str) -> str:
+        return require_text(actor, "actor", 100)
+
+    def register_casualty(self, payload: Dict[str, Any], actor: str,
+                          role: str) -> Dict[str, Any]:
+        # 请求入口：分诊判定落在triage模块，台账落在evacuation模块
+        ensure_role(role, TRIAGE_ROLES)
+        actor = self._med_actor(actor)
+        case_ref = require_text(payload.get("case_ref"), "case_ref", 100)
+        triage = normalize_triage(payload.get("triage"))
+        name = payload.get("name")
+        if name is not None:
+            name = require_text(name, "name", 100)
+        source = require_text(payload.get("source", "field"), "source", 100)
+        casualty = self.ledger.register(case_ref, triage, actor, name, source)
+        self.repository.append_audit(
+            "med_register_duplicate" if casualty.get("duplicate") else "med_register",
+            MED_ENTITY, casualty["id"], actor, {
+                "case_ref": case_ref,
+                "reported_triage": triage,
+                "applied_triage": casualty["applied_triage"],
+            })
+        return casualty
+
+    def recheck_casualty(self, casualty_id: int, payload: Dict[str, Any],
+                         actor: str, role: str) -> Dict[str, Any]:
+        ensure_role(role, TRIAGE_ROLES)
+        actor = self._med_actor(actor)
+        new_triage = normalize_triage(payload.get("triage"))
+        casualty = self.ledger.recheck(casualty_id, new_triage, actor)
+        self.repository.append_audit("med_recheck", MED_ENTITY, casualty_id, actor, {
+            "triage": new_triage,
+            "triage_label": TRIAGE_LABELS[new_triage],
+        })
+        return casualty
+
+    def waiting_queue(self, role: str) -> list:
+        ensure_role(role, MED_VIEW_ROLES)
+        return self.ledger.waiting_queue()
+
+    def get_casualty(self, casualty_id: int, role: str) -> Dict[str, Any]:
+        ensure_role(role, MED_VIEW_ROLES)
+        return self.ledger.get_casualty(casualty_id)
+
+    def casualty_reports(self, casualty_id: int, role: str) -> list:
+        ensure_role(role, MED_VIEW_ROLES)
+        return self.ledger.reports(casualty_id)
+
+    def add_vehicle(self, payload: Dict[str, Any], actor: str, role: str) -> Dict[str, Any]:
+        ensure_role(role, DISPATCH_ROLES)
+        actor = self._med_actor(actor)
+        plate = require_text(payload.get("plate"), "plate", 50)
+        seats = payload.get("seats")
+        if not isinstance(seats, int) or isinstance(seats, bool) or seats < 0:
+            from .domain import ValidationError
+            raise ValidationError("seats必须是非负整数")
+        vehicle = self.ledger.add_vehicle(plate, seats)
+        self.repository.append_audit("med_vehicle", BATCH_ENTITY, vehicle["id"], actor, {
+            "plate": plate, "seats": seats,
+        })
+        return vehicle
+
+    def list_vehicles(self, role: str) -> list:
+        ensure_role(role, MED_VIEW_ROLES)
+        return self.ledger.list_vehicles()
+
+    def add_receiver(self, payload: Dict[str, Any], actor: str,
+                     role: str) -> Dict[str, Any]:
+        ensure_role(role, DISPATCH_ROLES)
+        actor = self._med_actor(actor)
+        name = require_text(payload.get("name"), "name", 100)
+        beds = payload.get("total_beds")
+        if not isinstance(beds, int) or isinstance(beds, bool) or beds < 0:
+            from .domain import ValidationError
+            raise ValidationError("total_beds必须是非负整数")
+        receiver = self.ledger.add_receiver(name, beds)
+        self.repository.append_audit("med_receiver", BATCH_ENTITY, receiver["id"],
+                                     actor, {"name": name, "total_beds": beds})
+        return receiver
+
+    def list_receivers(self, role: str) -> list:
+        ensure_role(role, MED_VIEW_ROLES)
+        return self.ledger.list_receivers()
+
+    def confirm_batch(self, payload: Dict[str, Any], actor: str,
+                      role: str) -> Dict[str, Any]:
+        ensure_role(role, DISPATCH_ROLES)
+        actor = self._med_actor(actor)
+        vehicle_id = payload.get("vehicle_id")
+        seats = payload.get("seats")
+        if vehicle_id is None and seats is None:
+            from .domain import ValidationError
+            raise ValidationError("必须提供vehicle_id或seats")
+        batch = self.ledger.confirm_batch(vehicle_id, seats, actor)
+        self.repository.append_audit("med_batch_confirm", BATCH_ENTITY, batch["id"],
+                                     actor, {
+                                         "member_ids": [m["id"] for m in batch["members"]],
+                                         "seat_gap": batch["seat_gap"],
+                                     })
+        return batch
+
+    def dispatch_batch(self, batch_id: int, payload: Dict[str, Any],
+                       actor: str, role: str) -> Dict[str, Any]:
+        ensure_role(role, DISPATCH_ROLES)
+        actor = self._med_actor(actor)
+        receiver_id = payload.get("receiver_id")
+        if not isinstance(receiver_id, int) or receiver_id < 1:
+            from .domain import ValidationError
+            raise ValidationError("receiver_id必须是正整数")
+        batch = self.ledger.dispatch_batch(batch_id, receiver_id, actor)
+        self.repository.append_audit("med_dispatch", BATCH_ENTITY, batch_id, actor, {
+            "receiver_id": receiver_id,
+            "member_ids": [m["id"] for m in batch["members"]],
+        })
+        return batch
+
+    def list_batches(self, role: str) -> list:
+        ensure_role(role, MED_VIEW_ROLES)
+        return self.ledger.list_batches()
+
+    def get_batch(self, batch_id: int, role: str) -> Dict[str, Any]:
+        ensure_role(role, MED_VIEW_ROLES)
+        return self.ledger.get_batch(batch_id)

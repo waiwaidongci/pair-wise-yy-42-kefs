@@ -21,6 +21,8 @@ class Repository:
         self.conn.execute("PRAGMA foreign_keys = ON")
         self.conn.execute("PRAGMA journal_mode = WAL")
         self._create_schema()
+        from .evacuation import EvacuationLedger
+        self.evacuation = EvacuationLedger(self.conn, self._lock)
 
     def _create_schema(self) -> None:
         statuses = ",".join("'" + s.replace("'", "''") + "'" for s in STATES)
@@ -64,6 +66,52 @@ class Repository:
                     previous_hash TEXT NOT NULL,
                     entry_hash TEXT NOT NULL UNIQUE,
                     created_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS med_casualties (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    case_ref TEXT NOT NULL UNIQUE,
+                    first_triage TEXT NOT NULL,
+                    current_triage TEXT NOT NULL,
+                    name TEXT,
+                    registered_by TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS med_reports (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    casualty_id INTEGER NOT NULL REFERENCES med_casualties(id) ON DELETE CASCADE,
+                    triage TEXT NOT NULL,
+                    source TEXT NOT NULL,
+                    accepted INTEGER NOT NULL,
+                    created_by TEXT NOT NULL,
+                    created_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS med_vehicles (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    plate TEXT NOT NULL UNIQUE,
+                    seats INTEGER NOT NULL CHECK(seats >= 0)
+                );
+                CREATE TABLE IF NOT EXISTS med_receivers (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    name TEXT NOT NULL UNIQUE,
+                    total_beds INTEGER NOT NULL CHECK(total_beds >= 0),
+                    used_beds INTEGER NOT NULL DEFAULT 0 CHECK(used_beds >= 0 AND used_beds <= total_beds)
+                );
+                CREATE TABLE IF NOT EXISTS med_batches (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    vehicle_id INTEGER REFERENCES med_vehicles(id),
+                    receiver_id INTEGER REFERENCES med_receivers(id),
+                    status TEXT NOT NULL DEFAULT 'confirmed'
+                        CHECK(status IN ('confirmed','dispatched')),
+                    dispatch_seq INTEGER,
+                    dispatched_at TEXT,
+                    created_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS med_batch_members (
+                    batch_id INTEGER NOT NULL REFERENCES med_batches(id) ON DELETE CASCADE,
+                    casualty_id INTEGER NOT NULL UNIQUE,
+                    position INTEGER NOT NULL,
+                    PRIMARY KEY (batch_id, casualty_id)
                 );
             """)
 
